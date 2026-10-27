@@ -215,6 +215,29 @@ bash PrepareTorrServerRuntime.sh
 | `dispose()` | Clean up resources and stop active bridges |
 | `isSupportedPlatform` | Returns `true` if current platform is supported |
 
+### Desktop sidecar events
+
+The desktop runtime can emit unsolicited JSON events on stdout alongside RPC
+responses. Events omit the top-level `id`, so existing clients that only route
+responses by `id` remain compatible. A Cloudflare challenge is reported as:
+
+```json
+{
+  "event": "cloudflare",
+  "requestId": "req_12",
+  "data": {
+    "url": "https://example.com/protected",
+    "statusCode": 403,
+    "userAgent": "Mozilla/5.0 ..."
+  }
+}
+```
+
+`requestId` identifies the RPC that caused the request when correlation is
+available; hosts should also accept a missing `requestId`. Challenge events are
+notifications only: the runtime leaves the HTTP response unchanged, while the
+host owns recovery, credentials, cancellation, and retry.
+
 ### `ExtensionManager`
 
 | Property / Method | Description |

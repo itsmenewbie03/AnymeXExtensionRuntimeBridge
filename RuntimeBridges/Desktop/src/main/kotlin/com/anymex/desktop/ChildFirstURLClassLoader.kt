@@ -22,7 +22,9 @@ class ChildFirstURLClassLoader(
                name.startsWith("com.anymex.") ||
                name.startsWith("com.lagradost.cloudstream3.") ||
                name.startsWith("com.google.gson.") ||
-               name.startsWith("eu.kanade.tachiyomi.")
+               (name.startsWith("eu.kanade.tachiyomi.") &&
+                   !name.startsWith("eu.kanade.tachiyomi.animeextension.") &&
+                   !name.startsWith("eu.kanade.tachiyomi.extension."))
     }
 
     override fun loadClass(name: String?, resolve: Boolean): Class<*> {

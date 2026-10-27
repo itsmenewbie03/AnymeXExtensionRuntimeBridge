@@ -72,6 +72,9 @@ dependencies {
     implementation "org.json:json:20240303"
     implementation "androidx.collection:collection:1.4.4"
     implementation project(':kotatsu_ext')
+
+    testImplementation "org.jetbrains.kotlin:kotlin-test:2.1.0"
+    testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
 }
 
 tasks.register("shadowJar", Jar) {
@@ -89,4 +92,8 @@ tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
         jvmTarget = "17"
         freeCompilerArgs += ["-Xcontext-receivers"]
     }
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
 }

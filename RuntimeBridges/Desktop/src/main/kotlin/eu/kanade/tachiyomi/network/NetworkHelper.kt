@@ -75,6 +75,7 @@ class NetworkHelper(
             )
             .addInterceptor(UncaughtExceptionInterceptor())
             .addInterceptor(CloudflareInterceptor(context))
+            .addNetworkInterceptor(com.anymex.desktop.network.CloudflareNotificationInterceptor())
             .addInterceptor(object : Interceptor {
                 override fun intercept(chain: Interceptor.Chain): Response {
                     return try {

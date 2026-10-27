@@ -284,18 +284,15 @@ object DesktopExtensionLoader {
                 val url = getSafeString("url")
                 val cookieString = getSafeString("cookieString")
                 if (url.isBlank() || cookieString.isBlank()) {
-                    "{\"error\": \"url and cookieString are required\"}"
+                    mapOf("success" to false, "error" to "url and cookieString are required")
                 } else {
                     try {
-                        val uri = java.net.URI(url)
-                        cookieString.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { cookie ->
-                            NetworkHelper.sharedCookieManager.cookieStore.add(uri, java.net.HttpCookie.parse("Set-Cookie: $cookie").firstOrNull() ?: return@forEach)
-                        }
-                        System.err.println("[RPC] setCookies: injected ${cookieString.split(";").size} cookie(s) for $url")
-                        "ok"
+                        val count = com.anymex.desktop.network.DesktopNetworkState.setCookies(url, cookieString)
+                        System.err.println("[RPC] setCookies: injected $count cookie(s) for $url")
+                        mapOf("success" to true, "count" to count)
                     } catch (e: Exception) {
                         System.err.println("[RPC] setCookies error: ${e.message}")
-                        "{\"error\": \"${e.message}\"}"
+                        mapOf("success" to false, "error" to (e.message ?: "Cookie injection failed"))
                     }
                 }
             }
@@ -303,16 +300,16 @@ object DesktopExtensionLoader {
                 val url = getSafeString("url")
                 val userAgent = getSafeString("userAgent")
                 if (url.isBlank() || userAgent.isBlank()) {
-                    "{\"error\": \"url and userAgent are required\"}"
+                    mapOf("success" to false, "error" to "url and userAgent are required")
                 } else {
                     try {
                         val host = java.net.URI(url).host ?: url
                         System.setProperty("anymex.ua.$host", userAgent)
                         System.err.println("[RPC] setUserAgent: stored UA for host=$host")
-                        "ok"
+                        mapOf("success" to true)
                     } catch (e: Exception) {
                         System.err.println("[RPC] setUserAgent error: ${e.message}")
-                        "{\"error\": \"${e.message}\"}"
+                        mapOf("success" to false, "error" to (e.message ?: "User-Agent injection failed"))
                     }
                 }
             }
@@ -337,6 +334,7 @@ fun main(args: Array<String>) = runBlocking {
     
     val activeJobs = ConcurrentHashMap<String, Job>()
     val outLock = Any()
+    com.anymex.desktop.network.CloudflareNotifications.install(cleanOut, outLock)
     
     val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -354,10 +352,13 @@ fun main(args: Array<String>) = runBlocking {
         if (line.isBlank()) continue
 
         bridgeScope.launch {
+            var requestId: String? = null
+            var requestMethod: String? = null
             try {
                 val request = gson.fromJson(line, JsonObject::class.java)
                 val method = request.get("method")?.let { if (it.isJsonPrimitive) it.asString else null } ?: return@launch
-                val requestId = request.get("id")?.let { if (it.isJsonPrimitive) it.asString else null } ?: request.get("id")?.toString()?.replace("\"", "")
+                requestMethod = method
+                requestId = request.get("id")?.let { if (it.isJsonPrimitive) it.asString else null } ?: request.get("id")?.toString()?.replace("\"", "")
                 val methodArgs = request.getAsJsonObject("args") ?: JsonObject()
 
                 fun getSafeString(key: String): String =
@@ -436,7 +437,6 @@ fun main(args: Array<String>) = runBlocking {
                     } else {
                         sendResponse(resultData)
                     }
-                    activeJobs.remove(requestId)
                 } else {
                     synchronized(outLock) {
                         cleanOut.println(resultData)
@@ -445,14 +445,21 @@ fun main(args: Array<String>) = runBlocking {
             } catch (e: CancellationException) {
 
             } catch (e: Throwable) {
-                System.err.println("[RPC] Error processing line: $line")
+                System.err.println("[RPC] Error processing ${requestMethod ?: "unknown method"} (${requestId ?: "uncorrelated"})")
                 e.printStackTrace()
-                
+
                 val errorResponse = JsonObject()
+                if (requestId != null) {
+                    errorResponse.addProperty("id", requestId)
+                }
                 errorResponse.addProperty("error", e.message ?: e.toString())
-                
+
                 synchronized(outLock) {
                     cleanOut.println(gson.toJson(errorResponse))
+                }
+            } finally {
+                if (requestId != null) {
+                    activeJobs.remove(requestId)
                 }
             }
         }

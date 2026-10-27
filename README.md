@@ -238,6 +238,33 @@ available; hosts should also accept a missing `requestId`. Challenge events are
 notifications only: the runtime leaves the HTTP response unchanged, while the
 host owns recovery, credentials, cancellation, and retry.
 
+#### Building the desktop runtime
+
+The desktop bridge produces `desktop_bridge.jar` via the Gradle shadow plugin:
+
+```sh
+cd RuntimeBridges/Desktop
+bash ./gradlew shadowJar
+```
+
+The artifact lands in `build/libs/desktop_bridge.jar`. `build_desktop.sh` wraps
+the same build and copies the JAR to AnymeX's local runtime directories.
+
+#### Publishing a fork release
+
+This fork adds `.github/workflows/desktop-runtime.yml`, which builds the JAR on
+every `v*` tag and on manual dispatch. Tagged builds stage the JAR as
+`anymex_desktop_runtime.jar`, generate a `.sha256` checksum, and attach both to
+the GitHub release; manual runs upload them as a workflow artifact (the workflow
+must be on the default branch for the Actions-tab run button to appear). The job
+is gated to the fork repository, so it stays inactive if the workflow ever lands
+upstream.
+
+```sh
+git tag v2.7.3-animix.1
+git push origin v2.7.3-animix.1
+```
+
 ### `ExtensionManager`
 
 | Property / Method | Description |

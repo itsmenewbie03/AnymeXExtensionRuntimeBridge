@@ -1,0 +1,51 @@
+name: Desktop runtime
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Fork-only helper. If this ever lands upstream, that repo can remove this
+    # guard or point releases at its own artifact.
+    if: github.repository == 'itsmenewbie03/AnymeXExtensionRuntimeBridge'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build desktop bridge
+        working-directory: RuntimeBridges/Desktop
+        run: bash ./gradlew shadowJar
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p dist
+          cp RuntimeBridges/Desktop/build/libs/desktop_bridge.jar dist/anymex_desktop_runtime.jar
+          cd dist
+          sha256sum anymex_desktop_runtime.jar > anymex_desktop_runtime.jar.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anymex-desktop-runtime
+          path: dist/*
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

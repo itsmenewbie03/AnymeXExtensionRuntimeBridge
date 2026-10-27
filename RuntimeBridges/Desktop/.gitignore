@@ -13,6 +13,8 @@ local.properties
 *.kotlin_module
 out/
 *.jar
+# The Gradle wrapper bootstrap JAR is source, not build output.
+!gradle/wrapper/gradle-wrapper.jar
 
 *.log
 

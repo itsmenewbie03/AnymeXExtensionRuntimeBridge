@@ -6,12 +6,16 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 
 public class DesktopSharedPreferences implements SharedPreferences {
     private final File file;
     private final Gson gson = new Gson();
     private Map<String, Object> map = new HashMap<>();
+    private boolean loadFailed;
 
     public DesktopSharedPreferences(String fileName) {
         String home = System.getProperty("user.home");
@@ -29,15 +33,35 @@ public class DesktopSharedPreferences implements SharedPreferences {
                 map = loaded;
             }
         } catch (Exception e) {
+            loadFailed = true;
             System.err.println("Error loading preferences from " + file.getAbsolutePath() + ": " + e.getMessage());
         }
     }
 
-    private void save() {
-        try (FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8)) {
-            gson.toJson(map, writer);
+    private boolean save(Map<String, Object> values) {
+        if (loadFailed) {
+            System.err.println("Refusing to overwrite preferences that could not be loaded from " + file.getAbsolutePath());
+            return false;
+        }
+        File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
+        try (FileWriter writer = new FileWriter(temporary, StandardCharsets.UTF_8)) {
+            gson.toJson(values, writer);
         } catch (Exception e) {
             System.err.println("Error saving preferences to " + file.getAbsolutePath() + ": " + e.getMessage());
+            temporary.delete();
+            return false;
+        }
+        try {
+            try {
+                Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            return true;
+        } catch (Exception e) {
+            System.err.println("Error replacing preferences at " + file.getAbsolutePath() + ": " + e.getMessage());
+            temporary.delete();
+            return false;
         }
     }
 
@@ -144,9 +168,9 @@ public class DesktopSharedPreferences implements SharedPreferences {
                 }
             }
 
+            if (!save(tempMap)) return false;
             map.clear();
             map.putAll(tempMap);
-            save();
 
             if (!keysChanged.isEmpty()) {
                 synchronized (listeners) {

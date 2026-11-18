@@ -9,6 +9,7 @@ import '../../Extensions/Extensions.dart';
 import '../../Extensions/SourceMethods.dart';
 import '../../Logger.dart';
 import '../../Models/Source.dart';
+import '../../Settings/KvStore.dart';
 import '../../Runtime/Bridge/BridgeDispatcher.dart';
 import '../../Runtime/DesktopExtensionBase.dart';
 import 'package:http/http.dart' as http;
@@ -22,7 +23,7 @@ import 'IReaderSourceMethods.dart';
 
 class DesktopIReaderExtensions extends DesktopExtensionBase
     with TachiyomiJniDesktopExtension {
-  final http.Client _client = AnymeXExtensionBridge.context.http ?? http.Client();
+  http.Client get _client => AnymeXExtensionBridge.context.http ?? http.Client();
 
   @override
   String get id => 'ireader-desktop';
@@ -47,6 +48,9 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
   bool get requiresPlugin => true;
 
   @override
+  Source parseSourceJson(Map<String, dynamic> json) => IdSource.fromJson(json);
+
+  @override
   String get jniDataDir => 'ireader';
 
   @override
@@ -57,9 +61,38 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
       IReaderSourceMethods(source);
 
   @override
+  Future<void> initialize() async {
+    getReposRx(ItemType.novel).value = _loadRepos(ItemType.novel);
+    await super.initialize();
+  }
+
+  List<Repo> _loadRepos(ItemType type) {
+    final encoded = getVal<List<String>>('$id${type.name}Repos');
+    if (encoded == null || encoded.isEmpty) return [];
+    try {
+      return encoded.map((e) => Repo.fromJson(jsonDecode(e))).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  void _saveRepos(List<Repo> repos, ItemType type) {
+    setVal(
+      '$id${type.name}Repos',
+      repos.map((e) => jsonEncode(e.toJson())).toList(),
+    );
+  }
+
+  @override
   Future<void> fetchInstalledNovelExtensions() async {
-    final list = await _loadInstalled('getInstalledNovelExtensions', ItemType.novel);
+    final list = await _loadInstalled('loadExtensions', ItemType.novel);
     getInstalledRx(ItemType.novel).value = list;
+    final raw = getRawAvailableRx(ItemType.novel).value;
+    if (raw.isNotEmpty) {
+      final installedIds = list.map((e) => e.id).toSet();
+      getAvailableRx(ItemType.novel).value =
+          raw.where((s) => !installedIds.contains(s.id)).toList();
+    }
     final available = getRawAvailableRx(ItemType.novel).value.whereType<IdSource>().toList();
     if (available.isNotEmpty) {
       detectTachiyomiUpdates(this, available, ItemType.novel);
@@ -74,27 +107,39 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
 
   @override
   Future<void> fetchNovelExtensions() async {
-    final repos = getReposRx(ItemType.novel).value;
-    final allSources = <Source>[];
+    final repos = _loadRepos(ItemType.novel);
+    getReposRx(ItemType.novel).value = repos;
 
-    for (final repo in repos) {
-      try {
-        final index = await fetchTachiyomiRepoIndex(_client, repo.url);
-        final parsed = await compute(
-          _parseExtensions,
-          (index.body, index.url, ItemType.novel),
-        );
-        allSources.addAll(parsed);
-      } catch (e) {
-        Logger.log('Desktop IReader failed to fetch repo ${repo.url}: $e');
-      }
+    final repoResults = await Future.wait(
+      repos.map((repo) async {
+        try {
+          final index = await fetchTachiyomiRepoIndex(_client, repo.url);
+          return await compute(
+            _parseExtensions,
+            (index.body, index.url, ItemType.novel),
+          );
+        } catch (e) {
+          Logger.log('Desktop IReader failed to fetch repo ${repo.url}: $e');
+          return <Source>[];
+        }
+      }),
+    );
+    final allSources = repoResults.expand((s) => s).toList();
+
+    if (repos.isNotEmpty && allSources.isEmpty) {
+      Logger.log("No IReader sources fetched. Keeping cached sources.");
+      return;
     }
 
     getRawAvailableRx(ItemType.novel).value = allSources;
 
     final installedIds = getInstalledRx(ItemType.novel).value.map((e) => e.id).toSet();
-    getAvailableRx(ItemType.novel).value =
+    final available =
         allSources.where((s) => !installedIds.contains(s.id)).toList();
+    getAvailableRx(ItemType.novel).value = available;
+
+    saveCachedSources(ItemType.novel, allSources, raw: true);
+    saveCachedSources(ItemType.novel, available);
 
     detectTachiyomiUpdates(this, allSources, ItemType.novel);
   }
@@ -105,7 +150,7 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
   @override
   Future<void> fetchMangaExtensions() async {}
 
-  Future<List<Source>> _loadInstalled(String method, ItemType type) async {
+  Future<List<Source>> _loadInstalled([String method = 'loadExtensions', ItemType type = ItemType.novel]) async {
     try {
       final root = await RuntimePaths().extensionsDir;
       final dir = Directory(p.join(root.path, jniDataDir, type.toString()));
@@ -115,14 +160,36 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
 
       final result = await BridgeDispatcher().invokeMethod(method, {
         'path': dir.path,
+        'folderPath': dir.path,
       });
 
       if (result == null) return [];
 
-      final List<dynamic> list = result is String ? jsonDecode(result) : result as List<dynamic>;
+      List<dynamic> list = [];
+      if (result is List) {
+        list = result;
+      } else if (result is String) {
+        try {
+          final decoded = jsonDecode(result);
+          if (decoded is List) {
+            list = decoded;
+          } else if (decoded is Map && decoded['data'] is List) {
+            list = decoded['data'] as List;
+          } else if (decoded is Map && decoded['sources'] is List) {
+            list = decoded['sources'] as List;
+          }
+        } catch (_) {}
+      } else if (result is Map) {
+        if (result['data'] is List) {
+          list = result['data'] as List;
+        } else if (result['sources'] is List) {
+          list = result['sources'] as List;
+        }
+      }
 
       return list
-          .map((e) => IdSource.fromJson(Map<String, dynamic>.from(e as Map))..managerId = id)
+          .whereType<Map>()
+          .map((e) => IdSource.fromJson(Map<String, dynamic>.from(e))..managerId = id)
           .where((s) => s.itemType == type)
           .toList(growable: false);
     } catch (e) {
@@ -155,6 +222,7 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
       );
 
       final updated = List<Repo>.from(currentRepos)..add(repo);
+      _saveRepos(updated, type);
       getReposRx(type).value = updated;
       await fetchNovelExtensions();
     } catch (e) {
@@ -165,10 +233,12 @@ class DesktopIReaderExtensions extends DesktopExtensionBase
 
   @override
   Future<void> removeRepo(String repoUrl, ItemType type) async {
-    final normalizedUrl = repoUrl.replaceAll(RegExp(r'/+$'), '');
-    final current = getReposRx(type).value;
-    getReposRx(type).value = current.where((r) => r.url != normalizedUrl).toList();
-    await fetchNovelExtensions();
+    final repos = _loadRepos(type);
+    repos.removeWhere((r) => Extension.isMatchingRepoUrl(r.url, repoUrl));
+    _saveRepos(repos, type);
+    getReposRx(type).value = repos;
+
+    purgeRepoFromAvailable(repoUrl, type);
   }
 
   static List<IdSource> _parseExtensions(

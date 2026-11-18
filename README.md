@@ -261,8 +261,8 @@ is gated to the fork repository, so it stays inactive if the workflow ever lands
 upstream.
 
 ```sh
-git tag v2.7.3-animix.1
-git push origin v2.7.3-animix.1
+git tag v2.7.4-animix.1
+git push origin v2.7.4-animix.1
 ```
 
 ### `ExtensionManager`

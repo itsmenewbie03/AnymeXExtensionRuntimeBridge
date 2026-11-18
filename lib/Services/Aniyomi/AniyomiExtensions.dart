@@ -92,12 +92,16 @@ class AniyomiExtensions extends Extension {
       };
 
   @override
+  Source parseSourceJson(Map<String, dynamic> json) => ASource.fromJson(json);
+
+  @override
   Future<void> fetchInstalledAnimeExtensions() async {
     final path =
         getVal<String>('custom_anime_apk_path', defaultValue: '') ?? '';
     final list = await _loadInstalled(
         'getInstalledAnimeExtensions', ItemType.anime, path);
     getInstalledRx(ItemType.anime).value = list;
+    _filterCachedAvailable(ItemType.anime);
     final available =
         getRawAvailableRx(ItemType.anime).value.whereType<ASource>().toList();
     if (available.isNotEmpty) {
@@ -112,10 +116,21 @@ class AniyomiExtensions extends Extension {
     final list = await _loadInstalled(
         'getInstalledMangaExtensions', ItemType.manga, path);
     getInstalledRx(ItemType.manga).value = list;
+    _filterCachedAvailable(ItemType.manga);
     final available =
         getRawAvailableRx(ItemType.manga).value.whereType<ASource>().toList();
     if (available.isNotEmpty) {
       _detectUpdates(available, ItemType.manga);
+    }
+  }
+
+  void _filterCachedAvailable(ItemType type) {
+    final raw = getRawAvailableRx(type).value;
+    if (raw.isNotEmpty) {
+      final installedIds = getInstalledRx(type).value.map((e) => e.id).toSet();
+      getAvailableRx(type).value = List.unmodifiable(
+        raw.where((s) => !installedIds.contains(s.id)),
+      );
     }
   }
 
@@ -192,12 +207,23 @@ class AniyomiExtensions extends Extension {
 
   Future<List<Source>> _fetchExtensions(ItemType type) async {
     final repos = _loadRepos(type);
-    if (repos.isEmpty) return const [];
+    if (repos.isEmpty) {
+      saveCachedSources(type, const [], raw: true);
+      saveCachedSources(type, const []);
+      getAvailableRx(type).value = const [];
+      getRawAvailableRx(type).value = const [];
+      return const [];
+    }
 
     getReposRx(type).value = repos;
 
     final results = await Future.wait(repos.map((r) => _fetchRepo(r, type)));
     final all = results.expand((e) => e).toList(growable: false);
+
+    if (repos.isNotEmpty && all.isEmpty) {
+      Logger.log("No sources fetched for $id ($type). Keeping cached sources.");
+      return getAvailableRx(type).value;
+    }
 
     final installed = getInstalledRx(type).value;
     final installedIds = installed.map((e) => e.id).toSet();
@@ -206,9 +232,14 @@ class AniyomiExtensions extends Extension {
 
     getRawAvailableRx(type).value = List.unmodifiable(all);
 
-    return List.unmodifiable(
+    final available = List<Source>.unmodifiable(
       all.where((s) => !installedIds.contains(s.id)),
     );
+
+    saveCachedSources(type, all, raw: true);
+    saveCachedSources(type, available);
+
+    return available;
   }
 
   Future<List<Source>> _fetchRepo(Repo repo, ItemType type) async {
@@ -301,10 +332,12 @@ class AniyomiExtensions extends Extension {
                 : name.startsWith('Tachiyomi: ')
                     ? name.substring(10)
                     : name,
-            pkgName: map['pkg'],
-            apkName: rawApkUrl.startsWith('http') ? rawApkUrl : map['apk'],
-            lang: map['lang'],
-            version: map['version'],
+            pkgName: map['pkg']?.toString(),
+            apkName: (rawApkUrl.startsWith('http') ? rawApkUrl : map['apk'])?.toString(),
+            lang: map['lang'] is List
+                ? (map['lang'] as List).map((e) => e.toString()).join(',')
+                : map['lang']?.toString(),
+            version: map['version']?.toString(),
             isNsfw: map['isNsfw'] ?? false,
             itemType: detectedType,
             repo: repoUrl,
@@ -522,6 +555,7 @@ class AniyomiExtensions extends Extension {
 
       final avail = getAvailableRx(aSource.itemType!);
       avail.value = avail.value.where((e) => e.id != aSource.id).toList();
+      saveCachedSources(aSource.itemType!, avail.value);
 
       switch (aSource.itemType) {
         case ItemType.anime:
@@ -679,31 +713,53 @@ class AniyomiExtensions extends Extension {
   Future<void> removeRepo(String repoUrl, ItemType type) async {
     try {
       final repos = _loadRepos(type)
-          .where((r) => r.url != repoUrl)
+          .where((r) => !Extension.isMatchingRepoUrl(r.url, repoUrl))
           .toList(growable: false);
       _saveRepos(repos, type);
-
-      final rx = getAvailableRx(type);
-      rx.value = rx.value.where((s) => s.repo != repoUrl).toList();
-
       getReposRx(type).value = repos;
+
+      purgeRepoFromAvailable(repoUrl, type);
     } catch (e) {
       Logger.log("Failed to remove repo $repoUrl: $e");
     }
   }
 
   List<Repo> _loadRepos(ItemType type) {
-    final newKey = '$id${type.name}Repos';
-    final oldKey = 'aniyomi${type.name}ReposV2';
+    try {
+      final newKey = '$id${type.name}Repos';
+      final oldKey = 'aniyomi${type.name}ReposV2';
 
-    final encoded =
-        getVal<List<String>>(newKey) ?? getVal<List<String>>(oldKey);
-    if (encoded == null || encoded.isEmpty) return const [];
+      final raw = getVal(newKey) ?? getVal(oldKey);
+      if (raw == null) return const [];
 
-    return encoded
-        .map((e) => Repo.fromJson(jsonDecode(e)))
-        .toSet()
-        .toList(growable: false);
+      final repos = <Repo>[];
+      if (raw is List) {
+        for (final item in raw) {
+          try {
+            if (item is String) {
+              final trimmed = item.trim();
+              if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                final decoded = jsonDecode(trimmed);
+                if (decoded is Map<String, dynamic>) {
+                  repos.add(Repo.fromJson(decoded));
+                } else if (decoded is Map) {
+                  repos.add(Repo.fromJson(Map<String, dynamic>.from(decoded)));
+                }
+              } else if (trimmed.isNotEmpty) {
+                repos.add(Repo(url: trimmed, managerId: id));
+              }
+            } else if (item is Map<String, dynamic>) {
+              repos.add(Repo.fromJson(item));
+            } else if (item is Map) {
+              repos.add(Repo.fromJson(Map<String, dynamic>.from(item)));
+            }
+          } catch (_) {}
+        }
+      }
+      return repos.toSet().toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
   }
 
   void _saveRepos(List<Repo> repos, ItemType type) {

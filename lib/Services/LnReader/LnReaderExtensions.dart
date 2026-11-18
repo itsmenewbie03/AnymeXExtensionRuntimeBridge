@@ -35,6 +35,9 @@ class LnReaderExtensions extends Extension {
   bool get supportsNovel => true;
 
   @override
+  Source parseSourceJson(Map<String, dynamic> json) => LSource.fromJson(json);
+
+  @override
   SourceMethods createSourceMethods(Source source) =>
       LnReaderSourceMethods(source);
 
@@ -126,13 +129,12 @@ class LnReaderExtensions extends Extension {
 
     try {
       final repos = _loadRepos(type)
-          .where((r) => r.url != repoUrl)
+          .where((r) => !Extension.isMatchingRepoUrl(r.url, repoUrl))
           .toList(growable: false);
       _saveRepos(repos, type);
-
-      final rx = getAvailableRx(type);
-      rx.value = rx.value.where((s) => s.repo != repoUrl).toList();
       getReposRx(type).value = repos;
+
+      purgeRepoFromAvailable(repoUrl, type);
     } catch (e) {
       Logger.log("Failed to remove LNReader repo $repoUrl: $e");
     }
@@ -207,20 +209,34 @@ class LnReaderExtensions extends Extension {
 
   Future<List<Source>> _fetchExtensions(ItemType type) async {
     final repos = _loadRepos(type);
-    if (repos.isEmpty) return const [];
+    if (repos.isEmpty) {
+      saveCachedSources(type, const [], raw: true);
+      saveCachedSources(type, const []);
+      return const [];
+    }
 
     getReposRx(type).value = repos;
 
     final results = await Future.wait(repos.map((r) => _fetchRepo(r, type)));
     final allSources = results.expand((e) => e).toList(growable: false);
 
+    if (repos.isNotEmpty && allSources.isEmpty) {
+      Logger.log("No LNReader sources fetched. Keeping cached sources.");
+      return getAvailableRx(type).value;
+    }
+
     final installed = getInstalledRx(type).value;
     final installedIds = installed.map((e) => e.id).toSet();
 
     getRawAvailableRx(type).value = List.unmodifiable(allSources);
-    return List.unmodifiable(
+    final available = List<Source>.unmodifiable(
       allSources.where((s) => !installedIds.contains(s.id)),
     );
+
+    saveCachedSources(type, allSources, raw: true);
+    saveCachedSources(type, available);
+
+    return available;
   }
 
   Future<List<Source>> _fetchRepo(Repo repo, ItemType type) async {

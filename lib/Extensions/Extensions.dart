@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 
 import '../Models/Source.dart';
+import '../Settings/KvStore.dart';
 import 'SourceMethods.dart';
 
 abstract class Extension {
@@ -41,9 +43,92 @@ abstract class Extension {
     ItemType.novel: Rx<List<Repo>>([]),
   };
 
+  String _cacheKey(ItemType type, {bool raw = false}) =>
+      'ext_cache_${id}_${type.name}${raw ? '_raw' : ''}';
+
+  void saveCachedSources(ItemType type, List<Source> sources, {bool raw = false}) {
+    try {
+      final jsonList = sources.map((s) => s.toJson()).toList();
+      setVal(_cacheKey(type, raw: raw), jsonEncode(jsonList));
+    } catch (e) {
+      debugPrint('Failed to cache sources for $id ($type): $e');
+    }
+  }
+
+  List<Source> loadCachedSources(ItemType type, {bool raw = false}) {
+    try {
+      final rawStr = getVal<String>(_cacheKey(type, raw: raw));
+      if (rawStr == null || rawStr.isEmpty) return [];
+      final decoded = jsonDecode(rawStr);
+      if (decoded is! List) return [];
+      return decoded
+          .whereType<Map>()
+          .map((m) => parseSourceJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } catch (e) {
+      debugPrint('Failed to load cached sources for $id ($type): $e');
+      return [];
+    }
+  }
+
+  Source parseSourceJson(Map<String, dynamic> json) => Source.fromJson(json);
+
+  bool supportsType(ItemType type) {
+    switch (type) {
+      case ItemType.anime:
+        return supportsAnime;
+      case ItemType.manga:
+        return supportsManga;
+      case ItemType.novel:
+        return supportsNovel;
+    }
+  }
+
+  static bool isMatchingRepoUrl(String? sourceRepo, String targetRepoUrl) {
+    if (sourceRepo == null || sourceRepo.trim().isEmpty) return false;
+
+    String clean(String u) {
+      var s = u.trim().toLowerCase();
+      s = s.replaceAll(RegExp(r'^https?://'), '');
+      s = s.replaceAll(RegExp(r'/(index\.min\.json|index\.json|index\.pb\.gz|index\.pb|manifest\.json|plugin\.jar|plugins\.json)$'), '');
+      s = s.replaceAll(RegExp(r'/+$'), '');
+      return s;
+    }
+
+    final cSource = clean(sourceRepo);
+    final cTarget = clean(targetRepoUrl);
+
+    if (cSource == cTarget) return true;
+    if (cSource.startsWith('$cTarget/') || cTarget.startsWith('$cSource/')) return true;
+    return false;
+  }
+
+  void purgeRepoFromAvailable(String repoUrl, ItemType type) {
+    final avail = getAvailableRx(type);
+    avail.value = avail.value.where((s) => !isMatchingRepoUrl(s.repo ?? s.baseUrl, repoUrl)).toList();
+    saveCachedSources(type, avail.value);
+
+    final raw = getRawAvailableRx(type);
+    raw.value = raw.value.where((s) => !isMatchingRepoUrl(s.repo ?? s.baseUrl, repoUrl)).toList();
+    saveCachedSources(type, raw.value, raw: true);
+  }
+
+  void loadCachedAvailable() {
+    for (final type in ItemType.values) {
+      if (!supportsType(type)) continue;
+
+      final cached = loadCachedSources(type);
+      if (cached.isNotEmpty) {
+        getAvailableRx(type).value = cached;
+      }
+    }
+  }
+
   @mustCallSuper
   Future<void> initialize() async {
     try {
+      loadCachedAvailable();
+
       if (supportsAnime) {
         await fetchInstalledAnimeExtensions();
         unawaited(fetchAnimeExtensions());
@@ -91,7 +176,6 @@ abstract class Extension {
 
   void handleSchemes(Uri uri) {}
 
-  /// Helpers
   Rx<List<Source>> getInstalledRx(ItemType type) => _installed[type]!;
 
   Rx<List<Source>> getAvailableRx(ItemType type) => _available[type]!;
@@ -156,12 +240,15 @@ class Repo {
   });
 
   factory Repo.fromJson(Map<String, dynamic> json) {
+    final rawExtensions = json['extensions'];
     return Repo(
-      url: json['url'],
-      name: json['name'],
-      iconUrl: json['iconUrl'],
-      extensions: json['extensions'],
-      managerId: json['managerId'],
+      url: (json['url'] ?? '').toString(),
+      name: json['name']?.toString(),
+      iconUrl: json['iconUrl']?.toString(),
+      extensions: rawExtensions is List
+          ? rawExtensions.map((e) => e.toString()).join(',')
+          : rawExtensions?.toString(),
+      managerId: json['managerId']?.toString(),
     );
   }
 

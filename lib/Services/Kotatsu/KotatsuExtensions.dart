@@ -29,6 +29,10 @@ class KotatsuExtensions extends Extension {
   bool get requiresPlugin => true;
 
   @override
+  Source parseSourceJson(Map<String, dynamic> json) =>
+      KotatsuSource.fromJson(json);
+
+  @override
   SourceMethods createSourceMethods(Source source) =>
       KotatsuSourceMethods(source);
 
@@ -102,7 +106,7 @@ class KotatsuExtensions extends Extension {
   Future<void> removeRepo(String repoUrl, ItemType type) async {
     try {
       final repos = _loadRepos(type)
-          .where((r) => r.url != repoUrl)
+          .where((r) => !Extension.isMatchingRepoUrl(r.url, repoUrl))
           .toList(growable: false);
       _saveRepos(repos, type);
 
@@ -122,7 +126,7 @@ class KotatsuExtensions extends Extension {
       setVal('kotatsu_active_sources', <String>[]);
 
       await setInstalled(ItemType.manga, const []);
-      getAvailableRx(ItemType.manga).value = const [];
+      purgeRepoFromAvailable(repoUrl, type);
       getReposRx(type).value = repos;
     } catch (e) {
       Logger.log("Failed to remove Kotatsu repo $repoUrl: $e");
@@ -259,9 +263,14 @@ class KotatsuExtensions extends Extension {
       final availableSources =
           allSources.where((s) => !activeSet.contains(s.id)).toList();
       getAvailableRx(ItemType.manga).value = availableSources;
+      getRawAvailableRx(ItemType.manga).value = allSources;
+      saveCachedSources(ItemType.manga, allSources, raw: true);
+      saveCachedSources(ItemType.manga, availableSources);
     } catch (e) {
       Logger.log('Failed to fetch available Kotatsu extensions: $e');
-      getAvailableRx(ItemType.manga).value = const [];
+      if (getAvailableRx(ItemType.manga).value.isEmpty) {
+        getAvailableRx(ItemType.manga).value = const [];
+      }
     }
   }
 

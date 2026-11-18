@@ -805,16 +805,7 @@ object AniyomiSourceMethods {
                 val p = group.getPreference(i)
                 if (p.key != null) {
                     store[p.key] = PrefHandlers(p, p.getOnPreferenceClickListener(), p.getOnPreferenceChangeListener())
-                    when (p) {
-                        is ListPreference -> p.value = prefs.getString(p.key, p.value)
-                        is MultiSelectListPreference -> {
-                            val saved = prefs.getStringSet(p.key, p.values)
-                            if (saved != null) p.values = saved.toMutableSet()
-                        }
-                        is SwitchPreferenceCompat -> p.isChecked = prefs.getBoolean(p.key, p.isChecked)
-                        is EditTextPreference -> p.text = prefs.getString(p.key, p.text)
-                        is CheckBoxPreference -> p.isChecked = prefs.getBoolean(p.key, p.isChecked)
-                    }
+                    hydratePreference(p, prefs)
                 }
 
                 var summary = p.summary?.toString()
@@ -844,6 +835,7 @@ object AniyomiSourceMethods {
                         is SwitchPreferenceCompat -> "switch"
                         is EditTextPreference -> "text"
                         is CheckBoxPreference -> "checkBox"
+                        is PreferenceCategory -> "category"
                         else -> "other"
                     },
                     "value" to when (p) {
@@ -914,9 +906,9 @@ object AniyomiSourceMethods {
 
                 val shouldSave = try {
                     handler.change?.onPreferenceChange(pref, newValue) ?: true
-                } catch (e: Exception) { true }
-                
-                if (!shouldSave) return "success"
+                } catch (e: Exception) { return "failure" }
+
+                if (!shouldSave) return "failure"
 
                 when (pref) {
                     is SwitchPreferenceCompat -> {
@@ -954,8 +946,7 @@ object AniyomiSourceMethods {
                 }
             }
             
-            editor.apply()
-            return "success"
+            return if (editor.commit()) "success" else "failure"
         } catch (e: Exception) { return "failure" }
     }
 

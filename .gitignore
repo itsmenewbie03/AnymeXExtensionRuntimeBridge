@@ -27,4 +27,6 @@ doc/api/
 .flutter-plugins-dependencies
 
 test/
+!RuntimeBridges/Desktop/src/test/
+!RuntimeBridges/Desktop/src/test/**
 /output
